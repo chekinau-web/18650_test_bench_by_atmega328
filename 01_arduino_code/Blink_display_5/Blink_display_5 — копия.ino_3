@@ -1,0 +1,161 @@
+#include <LiquidCrystal.h>
+#include <SPI.h>  // ДОБАВЛЕНО: для SPI-шины
+#include <SD.h>   // ДОБАВЛЕНО: работа с SD-картой
+
+constexpr uint8_t pin8 = 8;
+
+// ========== НАСТРОЙКИ ПИНОВ LCD ==========
+constexpr uint8_t PIN_RS = 2;
+constexpr uint8_t PIN_EN = 3;
+constexpr uint8_t PIN_DB4 = A2;
+constexpr uint8_t PIN_DB5 = A3;
+constexpr uint8_t PIN_DB6 = A4;
+constexpr uint8_t PIN_DB7 = A5;
+
+// ========== ПИН ДАТЧИКОВ ==========
+constexpr uint8_t ADC_PIN = A0;
+constexpr uint8_t ADC_PIN1 = A1;
+
+// ========== ПИН SD (CS) ==========
+constexpr uint8_t SD_CS = 7;  // PD7, физическая нога 13
+
+// ========== ПАРАМЕТРЫ ACS712 (30A) ==========
+const float V_REF = 5.0;
+const float SENSITIVITY = 0.066;  // 66 мВ/А
+
+// ========== ИНТЕРВАЛ ИЗМЕРЕНИЙ (мс) ==========
+constexpr unsigned long INTERVAL_MS = 1000;  // 1 секунда
+
+// ========== ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ ==========
+LiquidCrystal lcd(PIN_RS, PIN_EN, PIN_DB4, PIN_DB5, PIN_DB6, PIN_DB7);
+unsigned long n = 0;
+unsigned long lastTime = 0;
+int zeroADC = 512;  // калибровочное значение АЦП при нулевом токе
+bool sdOk = false;  // ДОБАВЛЕНО: флаг успешной инициализации SD
+
+// ========== SETUP ==========
+void setup() {
+  lcd.begin(16, 2);
+  analogReference(EXTERNAL);
+
+  // Калибровка нуля ACS712
+  lcd.print("Calibrating...");
+  delay(1000);
+  long sum = 0;
+  for (int i = 0; i < 100; i++) {
+    sum += analogRead(ADC_PIN);
+    delay(2);
+  }
+  zeroADC = sum / 100;
+  lcd.clear();
+
+  // ----- ИНИЦИАЛИЗАЦИЯ SD -----
+  lcd.setCursor(0, 0);
+  lcd.print("SD init...");
+  pinMode(SD_CS, OUTPUT);
+  digitalWrite(SD_CS, HIGH);  // CS неактивен
+
+  if (!SD.begin(SD_CS)) {
+    lcd.setCursor(0, 1);
+    lcd.print("SD card error!");
+    sdOk = false;
+  } else {
+    lcd.setCursor(0, 1);
+    lcd.print("SD OK          ");
+    sdOk = true;
+    // Создаём заголовок CSV-файла (если файла не было)
+    File dataFile = SD.open("data.csv", FILE_WRITE);
+    if (dataFile) {
+      if (dataFile.size() == 0) {  // если файл новый – пишем заголовок
+        dataFile.println("n,Current_A,Voltage_V,ADC_current,ADC_voltage");
+      }
+      dataFile.close();
+    }
+  }
+  delay(1500);
+  lcd.clear();
+
+  lcd.setCursor(0, 0);
+  lcd.print("n=");
+  lcd.setCursor(0, 1);
+  lcd.print("ADC=");
+
+  pinMode(pin8, OUTPUT);
+}
+
+// ========== LOOP ==========
+void loop() {
+  unsigned long now = millis();
+
+  if (now - lastTime >= INTERVAL_MS) {
+    lastTime = now;
+    n++;
+
+    // Измерение
+    int adcValue = analogRead(ADC_PIN);
+    int adcValue1 = analogRead(ADC_PIN1);
+
+    // Расчёт тока
+    float voltageDiff = (adcValue - zeroADC) * (V_REF / 1023.0);
+    float current = voltageDiff / SENSITIVITY;
+    float voltage1 = adcValue1 * (V_REF / 1023.0);
+
+    // ----- Верхняя строка: номер цикла -----
+    lcd.setCursor(2, 0);
+    lcd.print("          ");
+    lcd.setCursor(2, 0);
+    lcd.print(n);
+
+    // ----- Нижняя строка: ADC значение -----
+    lcd.setCursor(4, 1);
+    lcd.print("     ");
+    lcd.setCursor(4, 1);
+    lcd.print(adcValue);
+
+    // ----- Вывод тока справа -----
+    lcd.setCursor(11, 1);
+    lcd.print("     ");
+    lcd.setCursor(11, 1);
+    lcd.print(current, 2);
+    lcd.print("A");
+
+    // ----- Вывод напряжения -----
+    lcd.setCursor(10, 0);
+    lcd.print("     ");
+    lcd.setCursor(10, 0);
+    lcd.print(voltage1, 4);
+
+
+    // ----- Управление светодиодом и реле цепи АКЬ18650 (гистерезис по напряжению) -----
+    static uint8_t nnn = 0;
+    if (voltage1 > 4.0 && nnn == 0)
+      nnn = 1;
+    if (voltage1 < 3.0 && nnn == 1)
+      nnn = 2;
+    if (nnn == 1)
+      digitalWrite(pin8, HIGH);
+    else
+      digitalWrite(pin8, LOW);
+    
+    // ----- ЗАПИСЬ НА SD (если инициализация успешна) -----
+    if (sdOk && nnn == 1) {
+      File dataFile = SD.open("data.csv", FILE_WRITE);
+      if (dataFile) {
+        dataFile.print(n);
+        dataFile.print(",");
+        dataFile.print(current, 3);
+        dataFile.print(",");
+        dataFile.print(voltage1, 4);
+        dataFile.print(",");
+        dataFile.print(adcValue);
+        dataFile.print(",");
+        dataFile.println(adcValue1);
+        dataFile.close();
+      } else {
+        // Если файл не открылся – возможно, карта вынута или ошибка
+        lcd.setCursor(0, 1);
+        lcd.print("SD write error ");
+      }
+    }
+  }
+}
