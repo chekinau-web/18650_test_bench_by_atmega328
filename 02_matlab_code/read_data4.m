@@ -7,7 +7,7 @@ current_raw = data(:,2);
 voltage = data(:,3);
 
 % Фильтрация
-window_median = 41;
+window_median = 201;
 current_filtered = medfilt1(current_raw, window_median);
 
 % Построение
